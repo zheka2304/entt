@@ -1,7 +1,7 @@
 #ifndef ENTT_RESOURCE_LOADER_HPP
 #define ENTT_RESOURCE_LOADER_HPP
 
-#include "fwd.hpp"
+#include "fwd.hpp" // IWYU pragma: export
 #include "handle.hpp"
 
 namespace entt {
