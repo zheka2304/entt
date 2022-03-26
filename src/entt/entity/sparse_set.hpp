@@ -710,6 +710,10 @@ public:
         (mode == deletion_policy::in_place) ? in_place_pop(it, it + 1u) : swap_and_pop(it, it + 1u);
     }
 
+    void erase(basic_registry<entity_type>&, const entity_type entt) {
+        erase(entt);
+    }
+
     /**
      * @brief Erases entities from a set.
      *
@@ -736,6 +740,10 @@ public:
      * @return True if the entity is actually removed, false otherwise.
      */
     bool remove(const entity_type entt) {
+        return contains(entt) && (erase(entt), true);
+    }
+
+    bool remove(basic_registry<entity_type>&, const entity_type entt) {
         return contains(entt) && (erase(entt), true);
     }
 

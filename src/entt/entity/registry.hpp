@@ -18,6 +18,7 @@
 #include "../core/type_info.hpp"
 #include "../core/type_traits.hpp"
 #include "../core/utility.hpp"
+#include "polymorphic.hpp"
 #include "component.hpp"
 #include "entity.hpp"
 #include "fwd.hpp"
@@ -319,6 +320,9 @@ class basic_registry {
         free_list = entity_traits::combine(entity_traits::to_integral(entity), tombstone);
         return vers;
     }
+
+    template<typename, typename, typename>
+    friend struct internal::polymorphic_component_container;
 
 public:
     /*! @brief Underlying entity identifier. */
@@ -741,7 +745,7 @@ public:
     template<typename Component, typename... Args>
     decltype(auto) emplace(const entity_type entity, Args &&...args) {
         ENTT_ASSERT(valid(entity), "Invalid entity");
-        return assure<Component>().emplace(entity, std::forward<Args>(args)...);
+        return assure<Component>().emplace(*this, entity, std::forward<Args>(args)...);
     }
 
     /**
@@ -798,7 +802,7 @@ public:
 
         return cpool.contains(entity)
                    ? cpool.patch(entity, [&args...](auto &...curr) { ((curr = Component{std::forward<Args>(args)...}), ...); })
-                   : cpool.emplace(entity, std::forward<Args>(args)...);
+                   : cpool.emplace(*this, entity, std::forward<Args>(args)...);
     }
 
     /**
@@ -866,7 +870,7 @@ public:
     template<typename Component, typename... Other>
     size_type remove(const entity_type entity) {
         ENTT_ASSERT(valid(entity), "Invalid entity");
-        return (assure<Component>().remove(entity) + ... + assure<Other>().remove(entity));
+        return (assure<Component>().remove(*this, entity) + ... + assure<Other>().remove(*this, entity));
     }
 
     /**
@@ -912,7 +916,7 @@ public:
     template<typename Component, typename... Other>
     void erase(const entity_type entity) {
         ENTT_ASSERT(valid(entity), "Invalid entity");
-        (assure<Component>().erase(entity), (assure<Other>().erase(entity), ...));
+        (assure<Component>().erase(*this, entity), (assure<Other>().erase(*this, entity), ...));
     }
 
     /**
@@ -1029,6 +1033,7 @@ public:
      */
     template<typename Component, typename... Args>
     [[nodiscard]] decltype(auto) get_or_emplace(const entity_type entity, Args &&...args) {
+        static_assert(!is_polymorphic_component_v<Component>, "get_or_emplace is not working with polymorphic components");
         ENTT_ASSERT(valid(entity), "Invalid entity");
         auto &cpool = assure<Component>();
         return cpool.contains(entity) ? cpool.get(entity) : cpool.emplace(entity, std::forward<Args>(args)...);
@@ -1209,13 +1214,13 @@ public:
      */
     template<typename Component, typename... Other, typename... Exclude>
     [[nodiscard]] basic_view<entity_type, get_t<std::add_const_t<Component>, std::add_const_t<Other>...>, exclude_t<Exclude...>> view(exclude_t<Exclude...> = {}) const {
-        return {assure<std::remove_const_t<Component>>(), assure<std::remove_const_t<Other>>()..., assure<Exclude>()...};
+        return {assure<std::remove_const_t<internal::unwrap_every_t<Component>>>(), assure<std::remove_const_t<internal::unwrap_every_t<Other>>>()..., assure<Exclude>()...};
     }
 
     /*! @copydoc view */
     template<typename Component, typename... Other, typename... Exclude>
     [[nodiscard]] basic_view<entity_type, get_t<Component, Other...>, exclude_t<Exclude...>> view(exclude_t<Exclude...> = {}) {
-        return {assure<std::remove_const_t<Component>>(), assure<std::remove_const_t<Other>>()..., assure<Exclude>()...};
+        return {assure<std::remove_const_t<internal::unwrap_every_t<Component>>>(), assure<std::remove_const_t<internal::unwrap_every_t<Other>>>()..., assure<Exclude>()...};
     }
 
     /**

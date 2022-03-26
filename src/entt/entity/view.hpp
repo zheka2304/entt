@@ -10,6 +10,7 @@
 #include "../config/config.h"
 #include "../core/iterator.hpp"
 #include "../core/type_traits.hpp"
+#include "polymorphic.hpp"
 #include "component.hpp"
 #include "entity.hpp"
 #include "fwd.hpp"
@@ -93,10 +94,13 @@ template<typename LhsType, auto... LhsArgs, typename RhsType, auto... RhsArgs>
     return !(lhs == rhs);
 }
 
-template<typename It, typename... Storage>
-struct extended_view_iterator final {
+template<typename It, typename Types, typename... Storage>
+struct extended_view_iterator;
+
+template<typename It, typename... Type, typename... Storage>
+struct extended_view_iterator<It, type_list<Type...>, Storage...> final {
     using difference_type = std::ptrdiff_t;
-    using value_type = decltype(std::tuple_cat(std::make_tuple(*std::declval<It>()), std::declval<Storage>().get_as_tuple({})...));
+    using value_type = decltype(std::tuple_cat(std::make_tuple(*std::declval<It>()), std::declval<Storage>().template get_as_tuple_as<Type>({})...));
     using pointer = input_iterator_pointer<value_type>;
     using reference = value_type;
     using iterator_category = std::input_iterator_tag;
@@ -117,7 +121,7 @@ struct extended_view_iterator final {
     }
 
     [[nodiscard]] reference operator*() const ENTT_NOEXCEPT {
-        return std::apply([entt = *it](auto *...curr) { return std::tuple_cat(std::make_tuple(entt), curr->get_as_tuple(entt)...); }, pools);
+        return std::apply([entt = *it](auto *...curr) { return std::tuple_cat(std::make_tuple(entt), curr->template get_as_tuple_as<Type>(entt)...); }, pools);
     }
 
     [[nodiscard]] pointer operator->() const ENTT_NOEXCEPT {
@@ -184,6 +188,8 @@ class basic_view;
  */
 template<typename Entity, typename... Component, typename... Exclude>
 class basic_view<Entity, get_t<Component...>, exclude_t<Exclude...>> {
+    // TODO: static_assert(std::is_same_v<type_list_unique_t<type_list<internal::unwrap_every_t<Component>...>>, type_list<internal::unwrap_every_t<Component>...>>, "view must contain unique list of components");
+
     template<typename, typename, typename, typename>
     friend class basic_view;
 
@@ -203,13 +209,17 @@ class basic_view<Entity, get_t<Component...>, exclude_t<Exclude...>> {
         if constexpr(Comp == Other) {
             return std::forward_as_tuple(std::get<Args>(curr)...);
         } else {
-            return std::get<Other>(pools)->get_as_tuple(std::get<0>(curr));
+            return std::get<Other>(pools)->template get_as_tuple_as<type_list_element_t<Other, type_list<Component...>>>(std::get<0>(curr));
         }
     }
 
     template<std::size_t Comp, typename Func, std::size_t... Index>
     void each(Func func, std::index_sequence<Index...>) const {
-        for(const auto curr: std::get<Comp>(pools)->each()) {
+        auto each = std::get<Comp>(pools)->each();
+        auto first = std::begin(each);
+        auto last = std::end(each);
+        for(; first != last; first++) {
+            const auto curr = first.template as<type_list_element_t<Comp, type_list<Component...>>>();
             const auto entt = std::get<0>(curr);
 
             if(((sizeof...(Component) != 1u) || (entt != tombstone))
@@ -235,11 +245,13 @@ public:
     /*! @brief Unsigned integer type. */
     using size_type = std::size_t;
     /*! @brief Common type among all storage types. */
-    using base_type = std::common_type_t<typename storage_type<Component>::base_type...>;
+    using base_type = std::common_type_t<typename storage_type<internal::unwrap_every_t<Component>>::base_type...>;
     /*! @brief Bidirectional iterator type. */
     using iterator = internal::view_iterator<base_type, sizeof...(Component) - 1u, sizeof...(Exclude)>;
+    /*! @brief Iterator for every component */
+    using extended_iterator = internal::extended_view_iterator<iterator, type_list<Component...>, storage_type<internal::unwrap_every_t<Component>>...>;
     /*! @brief Iterable view type. */
-    using iterable = iterable_adaptor<internal::extended_view_iterator<iterator, storage_type<Component>...>>;
+    using iterable = iterable_adaptor<extended_iterator>;
 
     /*! @brief Default constructor to use to create empty, invalid views. */
     basic_view() ENTT_NOEXCEPT
@@ -252,7 +264,7 @@ public:
      * @param component The storage for the types to iterate.
      * @param epool The storage for the types used to filter the view.
      */
-    basic_view(storage_type<Component> &...component, const storage_type<Exclude> &...epool) ENTT_NOEXCEPT
+    basic_view(storage_type<internal::unwrap_every_t<Component>> &...component, const storage_type<Exclude> &...epool) ENTT_NOEXCEPT
         : pools{&component...},
           filter{&epool...},
           view{std::min<const base_type *>({&component...}, [](auto *lhs, auto *rhs) { return lhs->size() < rhs->size(); })} {}
@@ -418,9 +430,9 @@ public:
         if constexpr(sizeof...(Comp) == 0) {
             return std::apply([entt](auto *...curr) { return std::tuple_cat(curr->get_as_tuple(entt)...); }, pools);
         } else if constexpr(sizeof...(Comp) == 1) {
-            return (std::get<storage_type<Comp> *>(pools)->get(entt), ...);
+            return (std::get<storage_type<internal::unwrap_every_t<Comp>> *>(pools)->template get_as<Comp>(entt), ...);
         } else {
-            return std::tuple_cat(std::get<storage_type<Comp> *>(pools)->get_as_tuple(entt)...);
+            return std::tuple_cat(std::get<storage_type<internal::unwrap_every_t<Comp>> *>(pools)->template get_as_tuple_as<Comp>(entt)...);
         }
     }
 
@@ -480,7 +492,7 @@ public:
      * @return An iterable object to use to _visit_ the view.
      */
     [[nodiscard]] iterable each() const ENTT_NOEXCEPT {
-        return {internal::extended_view_iterator{begin(), pools}, internal::extended_view_iterator{end(), pools}};
+        return {extended_iterator{begin(), pools}, extended_iterator{end(), pools}};
     }
 
     /**
@@ -501,7 +513,7 @@ public:
     }
 
 private:
-    std::tuple<storage_type<Component> *...> pools;
+    std::tuple<storage_type<internal::unwrap_every_t<Component>> *...> pools;
     std::array<const base_type *, sizeof...(Exclude)> filter;
     const base_type *view;
 };

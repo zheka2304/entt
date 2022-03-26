@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <type_traits>
 #include "../config/config.h"
+#include "polymorphic.hpp"
 
 namespace entt {
 
@@ -22,7 +23,7 @@ struct in_place_delete<Type, std::enable_if_t<Type::in_place_delete>>
     : std::true_type {};
 
 template<typename Type, typename = void>
-struct page_size: std::integral_constant<std::size_t, (ENTT_IGNORE_IF_EMPTY && std::is_empty_v<Type>) ? 0u : ENTT_PACKED_PAGE> {};
+struct page_size: std::integral_constant<std::size_t, (ENTT_IGNORE_IF_EMPTY && std::is_empty_v<Type> && !is_polymorphic_component_v<Type>) ? 0u : ENTT_PACKED_PAGE> {};
 
 template<typename Type>
 struct page_size<Type, std::enable_if_t<std::is_convertible_v<decltype(Type::page_size), std::size_t>>>
@@ -43,8 +44,10 @@ template<typename Type, typename = void>
 struct component_traits {
     static_assert(std::is_same_v<std::decay_t<Type>, Type>, "Unsupported type");
 
+    /*! @brief if component is polymorphic (see entt::inherit and entt::polymorphic). */
+    static constexpr bool is_polymorphic = is_polymorphic_component_v<Type>;
     /*! @brief Pointer stability, default is `false`. */
-    static constexpr bool in_place_delete = internal::in_place_delete<Type>::value;
+    static constexpr bool in_place_delete = internal::in_place_delete<Type>::value || is_polymorphic;
     /*! @brief Page size, default is `ENTT_PACKED_PAGE` for non-empty types. */
     static constexpr std::size_t page_size = internal::page_size<Type>::value;
 };

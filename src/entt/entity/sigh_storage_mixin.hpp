@@ -120,6 +120,15 @@ public:
         return this->get(entt);
     }
 
+    /** @copydoc emplace */
+    template<typename... Args>
+    decltype(auto) emplace(entt::basic_registry<entity_type>& reg, const entity_type entt, Args &&...args) {
+        ENTT_ASSERT(owner != nullptr, "Invalid pointer to registry");
+        Type::emplace(reg, entt, std::forward<Args>(args)...);
+        construction.publish(*owner, entt);
+        return this->get(entt);
+    }
+
     /**
      * @brief Patches the given instance for an entity.
      * @tparam Func Types of the function objects to invoke.
