@@ -118,6 +118,11 @@ public:
         return operator*();
     }
 
+    template<typename T>
+    [[nodiscard]] decltype(auto) as_tuple() const ENTT_NOEXCEPT {
+        return std::forward_as_tuple(as<T>());
+    }
+
     [[nodiscard]] difference_type index() const ENTT_NOEXCEPT {
         return offset - 1;
     }
@@ -202,12 +207,12 @@ public:
 
     [[nodiscard]] reference operator[](const difference_type value) const ENTT_NOEXCEPT {
         const auto pos = index() - value;
-        return (*packed)[pos / comp_traits::page_size][fast_mod(pos, comp_traits::page_size)];
+        return (*packed)[pos / comp_traits::page_size][fast_mod(pos, comp_traits::page_size)].ref();
     }
 
     [[nodiscard]] pointer operator->() const ENTT_NOEXCEPT {
         const auto pos = index();
-        return (*packed)[pos / comp_traits::page_size] + fast_mod(pos, comp_traits::page_size);
+        return std::addressof(((*packed)[pos / comp_traits::page_size] + fast_mod(pos, comp_traits::page_size))->ref());
     }
 
     [[nodiscard]] reference operator*() const ENTT_NOEXCEPT {
@@ -227,6 +232,15 @@ public:
             }
         } else {
             return operator*();
+        }
+    }
+
+    template<typename T>
+    [[nodiscard]] decltype(auto) as_tuple() const ENTT_NOEXCEPT {
+        if constexpr(internal::is_every_wrap_v<T>) {
+            return std::make_tuple(as<T>());
+        } else {
+            return std::forward_as_tuple(as<T>());
         }
     }
 
@@ -318,7 +332,7 @@ public:
         if constexpr(sizeof...(Other) == 0) {
             return std::make_tuple(*std::get<It>(it));
         } else {
-            return std::tuple_cat(std::make_tuple(*std::get<It>(it)), std::forward_as_tuple(std::get<Other>(it).template as<T>())...);
+            return std::tuple_cat(std::make_tuple(*std::get<It>(it)), std::get<Other>(it).template as_tuple<T>()...);
         }
     }
 

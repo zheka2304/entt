@@ -225,7 +225,7 @@ class basic_view<Entity, get_t<Component...>, exclude_t<Exclude...>> {
             if(((sizeof...(Component) != 1u) || (entt != tombstone))
                && ((Comp == Index || std::get<Index>(pools)->contains(entt)) && ...)
                && std::apply([entt](const auto *...cpool) { return (!cpool->contains(entt) && ...); }, filter)) {
-                if constexpr(is_applicable_v<Func, decltype(std::tuple_cat(std::tuple<entity_type>{}, std::declval<basic_view>().get({})))>) {
+                if constexpr(is_applicable_v<Func, decltype(std::tuple_cat(std::tuple<entity_type>{}, dispatch_get<Comp, Index>(curr)...))>) {
                     std::apply(func, std::tuple_cat(std::make_tuple(entt), dispatch_get<Comp, Index>(curr)...));
                 } else {
                     std::apply(func, std::tuple_cat(dispatch_get<Comp, Index>(curr)...));

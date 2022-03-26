@@ -213,7 +213,7 @@ struct component_ref_list_page_source {
         // find free page
         auto &ps = pages();
         auto found = std::find_if(ps.begin(), ps.end(), [=](page &p) {
-            return p.elem_size == count && (p.elem_count < page_size || p.free_list != -1);
+            return p.elem_size == static_cast<int32_t>(count) && (p.elem_count < static_cast<int32_t>(page_size) || p.free_list != -1);
         });
 
         // allocate if nothing was found
@@ -246,7 +246,7 @@ struct component_ref_list_page_source {
 
         ENTT_ASSERT(found != ps.end());
         page &p = *found;
-        ENTT_ASSERT(p.elem_size == reinterpret_cast<uintptr_t &>(array[1]));
+        ENTT_ASSERT(static_cast<uintptr_t>(p.elem_size) == reinterpret_cast<uintptr_t &>(array[1]));
 
         // add array to free list
         const int32_t stride = static_cast<int32_t>(elems_per_ref * p.elem_size + 2);
