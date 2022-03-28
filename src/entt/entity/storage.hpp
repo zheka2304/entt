@@ -114,7 +114,7 @@ public:
 
     template<typename T>
     [[nodiscard]] reference as() const ENTT_NOEXCEPT {
-        // static_assert(std::is_same_v<T, value_type>);
+        static_assert(std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<value_type>>);
         return operator*();
     }
 
@@ -1474,8 +1474,8 @@ public:
 
 
 private:
-    void emplace_ref(const entity_type entt, void* ptr, void* deleter) {
-        internal::polymorphic_component_ref ref{ptr, deleter };
+    void emplace_ref(const entity_type entt, Type& r, void* deleter) {
+        internal::polymorphic_component_ref ref{std::addressof(r), deleter };
         if (base_type::contains(entt)) {
             element_at(base_type::index(entt)).add_ref(ref);
         } else {
@@ -1489,8 +1489,8 @@ private:
         }
     }
 
-    void erase_ref(const entity_type entt, void* ptr) {
-        if (element_at(base_type::index(entt)).delete_ref(ptr)) {
+    void erase_ref(const entity_type entt, Type& r) {
+        if (element_at(base_type::index(entt)).delete_ref(std::addressof(r))) {
             base_type::erase(entt);
         }
     }

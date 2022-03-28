@@ -18,6 +18,7 @@ template<typename Component>
 struct component_hierarchy {
 public:
     using parent_types = type_list_unique_t<typename Component::parent_types_t>;
+    using direct_parent_types = type_list_unique_t<typename Component::direct_parent_types_t>;
     static constexpr bool has_inheritance_cycles = !std::is_same_v<parent_types, typename Component::parent_types_t>;
 };
 
@@ -25,11 +26,13 @@ public:
 template<typename Component, bool isPolymorphic>
 struct safe_component_parents_access_helper {
     using parent_types = type_list<>;
+    using direct_parent_types = type_list<>;
 };
 
 template<typename Component>
 struct safe_component_parents_access_helper<Component, true> {
     using parent_types = typename component_hierarchy<Component>::parent_types;
+    using direct_parent_types = typename component_hierarchy<Component>::direct_parent_types;
 };
 
 // checks, if component is polymorphic
@@ -105,7 +108,24 @@ struct polymorphic_component_ref_iterator {
     }
 };
 
+template<typename... T>
+struct polymorphic_inherit_alignment;
+
+template<typename First, typename... Other>
+struct polymorphic_inherit_alignment<First, Other...> {
+    static constexpr std::size_t value = std::max(alignof(First), polymorphic_inherit_alignment<Other...>::value);
+};
+
+template<>
+struct polymorphic_inherit_alignment<> {
+    static constexpr std::size_t value = 4;
+};
+
+template<typename... ParentT>
+static constexpr std::size_t polymorphic_inherit_alignment_v = polymorphic_inherit_alignment<ParentT...>::value;
+
 } // internal
+
 
 
 /**
@@ -114,9 +134,10 @@ struct polymorphic_component_ref_iterator {
  * @tparam ParentT parent types of for given component, must all be polymorphic
  */
 template<typename... ParentT>
-class inherit : public ParentT ... {
+class alignas(internal::polymorphic_inherit_alignment_v<ParentT...>) inherit : public ParentT ... {
 public:
-    using parent_types_t = type_list_cat_t< type_list<ParentT...>, typename ParentT::parent_types_t... >;
+    using direct_parent_types_t = type_list<ParentT...>;
+    using parent_types_t = type_list_cat_t< direct_parent_types_t, typename ParentT::parent_types_t... >;
 
     static constexpr bool ignore_if_empty = false;
     static constexpr bool in_place_delete = true;
@@ -132,6 +153,22 @@ static constexpr bool is_polymorphic_component_v = internal::is_polymorphic_comp
 /** @brief returns entt::type_list of parent types for given component type, if given type is not polymorphic will return empty list */
 template<typename Component>
 using polymorphic_component_parents_t = typename internal::safe_component_parents_access_helper<Component, is_polymorphic_component_v<Component> >::parent_types;
+
+/** @brief returns entt::type_list of direct parent types for given component type, if given type is not polymorphic will return empty list */
+template<typename Component>
+using polymorphic_component_direct_parents_t = typename internal::safe_component_parents_access_helper<Component, is_polymorphic_component_v<Component> >::direct_parent_types;
+
+/** @brief returns, if Parent is parent of polymorphic component Child */
+template<typename Parent, typename Child>
+static constexpr bool is_parent_of_v = type_list_contains_v<polymorphic_component_parents_t<Child>, Parent>;
+
+/** @brief returns, if Parent is parent of or same as polymorphic component Child */
+template<typename Parent, typename Child>
+static constexpr bool is_same_or_parent_of_v = is_parent_of_v<Parent, Child> || std::is_same_v<Parent, Child>;
+
+/** @brief returns, if Parent is direct parent of polymorphic component Child */
+template<typename Parent, typename Child>
+static constexpr bool is_direct_parent_of_v = type_list_contains_v<polymorphic_component_direct_parents_t<Child>, Parent>;
 
 /**
  * Used for iterating over all polymorphic components of the given type for one entity, used in pair with view
@@ -161,6 +198,9 @@ struct every {
     /** @brief iterator type */
     using iterator = internal::polymorphic_component_ref_iterator<type>;
 
+    /** @brief const iterator type */
+    using const_iterator = internal::polymorphic_component_ref_iterator<type>;
+
     every( iterator begin, iterator end ) :
         m_begin(begin), m_end(end) {}
 
@@ -169,6 +209,14 @@ struct every {
     }
 
     iterator end() {
+        return m_end;
+    }
+
+    iterator begin() const {
+        return m_begin;
+    }
+
+    iterator end() const {
         return m_end;
     }
 
@@ -565,13 +613,13 @@ private:
     // emplace references to this into containers for all parent types
     template<typename... ParentComponent>
     void emplace_hierarchy_references(entt::basic_registry<Entity> &registry, const Entity entity, Component &r, [[maybe_unused]] type_list<ParentComponent...> sequence) {
-        (registry.template assure<ParentComponent>().emplace_ref(entity, std::addressof(r), reinterpret_cast<void *>(&deleter)), ...);
+        (registry.template assure<ParentComponent>().emplace_ref(entity, r, reinterpret_cast<void *>(&deleter)), ...);
     }
 
     // erase references to this from containers for all parent types
     template<typename... ParentComponent>
     void erase_hierarchy_references(entt::basic_registry<Entity> &registry, const Entity entity, Component &r, [[maybe_unused]] type_list<ParentComponent...> sequence) {
-        (registry.template assure<ParentComponent>().erase_ref(entity, std::addressof(r)), ...);
+        (registry.template assure<ParentComponent>().erase_ref(entity, r), ...);
     }
 
 public:
@@ -690,7 +738,7 @@ constexpr bool is_polymorphic_component_container_v = unwrap_polymorphic_compone
 // unwraps entt::every<Component> and extracts component type and overall constness
 template<typename T>
 struct unwrap_every {
-    using type = T;
+    using type = std::remove_cv_t<T>;
     static constexpr bool is_every = false;
     static constexpr bool is_const = false;
 };
