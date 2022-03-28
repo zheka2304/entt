@@ -221,7 +221,7 @@ public:
 
     template<typename T>
     [[nodiscard]] decltype(auto) as() const ENTT_NOEXCEPT {
-        static_assert(std::is_same_v<internal::unwrap_every_t<T>, value_type>);
+        static_assert(std::is_same_v<std::remove_const_t<internal::unwrap_every_t<T>>, value_type>);
         if constexpr(internal::is_every_wrap_v<T>) {
             const auto pos = index();
             auto* comp = ((*packed)[pos / comp_traits::page_size] + fast_mod(pos, comp_traits::page_size));
@@ -1316,7 +1316,7 @@ public:
     /*! @copydoc get */
     template<typename T>
     [[nodiscard]] decltype(auto) get_as(const entity_type entt) const ENTT_NOEXCEPT {
-        static_assert(std::is_same_v<internal::unwrap_every_t<T>, value_type>);
+        static_assert(std::is_same_v<std::remove_const_t<internal::unwrap_every_t<T>>, value_type>);
         if constexpr(internal::is_every_wrap_v<T>) {
             return const_cast<const component_container_type&>(element_at(base_type::index(entt))).each();
         } else {
@@ -1327,7 +1327,7 @@ public:
     /*! @copydoc get */
     template<typename T>
     [[nodiscard]] decltype(auto) get_as(const entity_type entt) ENTT_NOEXCEPT {
-        static_assert(std::is_same_v<internal::unwrap_every_t<T>, value_type>);
+        static_assert(std::is_same_v<std::remove_const_t<internal::unwrap_every_t<T>>, value_type>);
         if constexpr(internal::is_every_wrap_v<T>) {
             if constexpr(internal::is_const_every_wrap_v<T>) {
                 return std::as_const(*this).template get_as<T>(entt);

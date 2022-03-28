@@ -17,19 +17,19 @@ struct polymorphic_base : public entt::polymorphic {
 };
 
 struct polymorphic_parent : public entt::inherit<polymorphic_base> {
-
+    int y;
 };
 
 struct polymorphic_component : public entt::inherit<polymorphic_parent> {
-
+    int z;
 };
 
 struct polymorphic_child : public entt::inherit<polymorphic_component> {
-
+    int w;
 };
 
 struct polymorphic_component_sibling : public entt::inherit<polymorphic_parent> {
-
+    int a;
 };
 
 

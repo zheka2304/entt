@@ -6,6 +6,7 @@
 #include <variant>
 #include <type_traits>
 #include "fwd.hpp"
+#include "../core/memory.hpp"
 #include "../core/type_traits.hpp"
 
 
@@ -738,7 +739,7 @@ constexpr bool is_polymorphic_component_container_v = unwrap_polymorphic_compone
 // unwraps entt::every<Component> and extracts component type and overall constness
 template<typename T>
 struct unwrap_every {
-    using type = std::remove_cv_t<T>;
+    using type = T;
     static constexpr bool is_every = false;
     static constexpr bool is_const = false;
 };
