@@ -336,6 +336,7 @@ TEST(Polymorphic, MultipleInheritance) {
 
     entt::entity ent = registry.create();
     auto& component = registry.emplace<multi_inherited>(ent);
+    ASSERT_TRUE((registry.all_of<multi_parent_a, multi_parent_b, multi_parent_c, multi_parent_bc>(ent)));
     component.a = 1;
     component.b = 2;
     component.c = 3;
@@ -346,6 +347,21 @@ TEST(Polymorphic, MultipleInheritance) {
     ASSERT_EQ(p_c.c, component.c);
     ASSERT_EQ(p_bc.b, component.b);
     ASSERT_EQ(p_bc.c, component.c);
+
+    registry.remove<multi_parent_a>(ent);
+    ASSERT_FALSE((registry.any_of<multi_parent_a, multi_parent_b, multi_parent_c, multi_parent_bc, multi_inherited>(ent)));
+    registry.emplace<multi_inherited>(ent);
+    registry.remove<multi_parent_b>(ent);
+    ASSERT_FALSE((registry.any_of<multi_parent_a, multi_parent_b, multi_parent_c, multi_parent_bc, multi_inherited>(ent)));
+    registry.emplace<multi_inherited>(ent);
+    registry.remove<multi_parent_c>(ent);
+    ASSERT_FALSE((registry.any_of<multi_parent_a, multi_parent_b, multi_parent_c, multi_parent_bc, multi_inherited>(ent)));
+    registry.emplace<multi_inherited>(ent);
+    registry.remove<multi_parent_bc>(ent);
+    ASSERT_FALSE((registry.any_of<multi_parent_a, multi_parent_b, multi_parent_c, multi_parent_bc, multi_inherited>(ent)));
+    registry.emplace<multi_inherited>(ent);
+    registry.remove<multi_inherited>(ent);
+    ASSERT_FALSE((registry.any_of<multi_parent_a, multi_parent_b, multi_parent_c, multi_parent_bc, multi_inherited>(ent)));
 }
 
 
