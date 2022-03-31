@@ -229,8 +229,8 @@ private:
 namespace internal {
 
 // polymorphic component reference lists with element count more than 1 are internally stored in the small contiguous lists
-// this class manages memory for such list based on given allocator, allocator is rebound to allocate arrays of void*
-template<typename Allocator>
+// this class manages memory for such lists based on given allocator, allocator is rebound to allocate arrays of void*
+template<typename Allocator, typename = void>
 struct component_ref_list_page_source {
     using alloc_traits = typename std::allocator_traits<Allocator>;
     static_assert(std::is_same_v<void*, typename alloc_traits::value_type>);
@@ -293,9 +293,9 @@ struct component_ref_list_page_source {
             return p.base <= array && array < p.base + (elems_per_ref * p.elem_size + 2) * page_size;
         });
 
-        ENTT_ASSERT(found != ps.end());
+        ENTT_ASSERT(found != ps.end(), "free_array got address, which does not belong to any page");
         page &p = *found;
-        ENTT_ASSERT(static_cast<uintptr_t>(p.elem_size) == reinterpret_cast<uintptr_t &>(array[1]));
+        ENTT_ASSERT(static_cast<uintptr_t>(p.elem_size) == reinterpret_cast<uintptr_t &>(array[1]), "array size does not match array size for this page");
 
         // add array to free list
         const int32_t stride = static_cast<int32_t>(elems_per_ref * p.elem_size + 2);
@@ -311,11 +311,13 @@ using page_source_from_allocator = component_ref_list_page_source<typename std::
 // wraps a void* pointer to reference list memory with some helper methods, does not allocate or deallocate memory on construction/destruction/copy/etc.
 template<typename Component, typename PageSource>
 struct polymorphic_component_ref_list {
+    // returns a list of zero capacity and size
     inline static void** null_list_base() ENTT_NOEXCEPT {
         static void* zero[2] = {nullptr, nullptr};
         return zero;
     }
 
+    // wraps given void pointer as list
     inline explicit polymorphic_component_ref_list(void* b) ENTT_NOEXCEPT :
             base(reinterpret_cast<void**>(b)) {}
 
@@ -400,13 +402,17 @@ namespace polymorphic_container_flags {
 };
 
 // Encapsulates memory access and layout of a polymorphic component container, implementing all required higher level functionalities
+// Allows different memory layouts for different types
 template<typename Component, typename Allocator, typename = void>
 struct polymorphic_container_memory_layout;
 
-// Note! Internal workings of this wrapper rely on pointer alignment, assuming that all used pointers have at least 2 bits, that are always zero,
+// FUNNY-POINTER-TRICKS-MEMORY-LAYOUT
+// Internal workings of this memory layout rely on pointer alignment, assuming that all used pointers have at least 2 bits (alignof at list 4, which is provided by entt::inherit by default), that are always zero,
 // so additional stored pointer also used for storing 2 bit flags for the state of the container:
 //    - bit 1 (pointer & 1) is 0 when container holds component value and 1 otherwise
 //    - bit 2 (pointer & 2) is 1 when container holds a pointer to heap-allocated list of references
+//
+// TODO: this memory layout should be std::enabled_if only if contains polymorphic component fulfills alignment requirements: all of its parents must have alignment of, at least 4
 //
 // Memory layout (4 variants):
 // Only value (pointer bits 00):
@@ -424,17 +430,8 @@ struct polymorphic_container_memory_layout<Component, Allocator, void> {
 
     using ref_list = polymorphic_component_ref_list<Component, page_source_from_allocator<Allocator>>;
 
-private:
-    // memory layout
-    struct alignas(buffer_alignment) {
-        uint8_t bytes[buffer_size];
-    } value;
-
-    std::uintptr_t pointer;
-
-public:
     // flag access
-    inline std::uint8_t get_flag(std::uint8_t bit) ENTT_NOEXCEPT {
+    [[nodiscard]] inline std::uint8_t get_flag(std::uint8_t bit) ENTT_NOEXCEPT {
         return pointer & bit;
     }
 
@@ -451,19 +448,19 @@ public:
     }
 
     // return buffer for value
-    inline Component* value_base() ENTT_NOEXCEPT {
+    [[nodiscard]] inline Component* value_base() ENTT_NOEXCEPT {
         return reinterpret_cast<Component*>(&value);
     }
 
     // return single reference
-    inline Component& ref() ENTT_NOEXCEPT {
+    [[nodiscard]] inline Component& ref() ENTT_NOEXCEPT {
         constexpr uintptr_t mask = static_cast<uintptr_t>(-1) ^ 3u;
         void* pointers[2] = {value_base(), reinterpret_cast<void*>(pointer & mask)};
         return *reinterpret_cast<Component*>(pointers[get_flag(polymorphic_container_flags::REFERENCE_BIT)]);
     }
 
     // get list (does not check, if list flag is set, getting list when it is not present is undefined behavior)
-    inline ref_list get_list() ENTT_NOEXCEPT {
+    [[nodiscard]] inline ref_list get_list() ENTT_NOEXCEPT {
         constexpr std::uintptr_t mask = static_cast<std::uintptr_t>(-1) ^ 3u;
         void* pointers[2] = {reinterpret_cast<void*>(pointer & mask), *reinterpret_cast<void**>(&value)};
         return ref_list{pointers[get_flag(polymorphic_container_flags::REFERENCE_BIT)]};
@@ -484,7 +481,7 @@ public:
     }
 
     // in a single reference state returns full reference
-    inline polymorphic_component_ref get_single_ref() ENTT_NOEXCEPT {
+    [[nodiscard]] inline polymorphic_component_ref get_single_ref() ENTT_NOEXCEPT {
         constexpr uintptr_t mask = static_cast<uintptr_t>(-1) ^ 3u;
         return polymorphic_component_ref{reinterpret_cast<void*>(pointer & mask), *reinterpret_cast<void**>(value_base())};
     }
@@ -498,7 +495,18 @@ public:
     inline void set_only_value() ENTT_NOEXCEPT {
         pointer = reinterpret_cast<std::uintptr_t>(ref_list::null_list_base());
     }
+
+    // memory layout
+private:
+    // buffer for value or one pointer
+    struct alignas(buffer_alignment) {
+        uint8_t bytes[buffer_size];
+    } value;
+
+    // additional pointer + flags
+    std::uintptr_t pointer;
 };
+
 
 // Container for polymorphic components, can hold a value + reference list, can hold 1 component or reference without heap allocation,
 // used as an internal type in polymorphic component storages. Has additional memory usage only of one pointer per component.
@@ -578,8 +586,8 @@ private:
         }
     }
 
-    // receives self list, deletes reference, that matches given pointer from it, if only one reference left, clears the list and puts reference into container
-    inline bool delete_ref_internal(ref_list list, void *ptr) {
+    // receives list, contained in this container, deletes reference, that matches given pointer from it, if only one reference left in the list, clears the list and puts reference into container
+    inline bool delete_ref_internal(ref_list list, void* ptr) {
         std::size_t size = list.get_size();
         polymorphic_component_ref* mem = list.get_list();
         // iterate over list and search matching ref
@@ -631,15 +639,11 @@ public:
         }
     }
 
-    // add reference to list
+    // adds reference to list
     inline void add_ref(polymorphic_component_ref ref) {
         ENTT_ASSERT(ref.pointer != layout.value_base(), "add_ref must not receive reference to its own value");
-        ref_list list{nullptr};
-        if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
-            list = layout.get_list();
-        } else {
-            list = create_list();
-        }
+        // get or create list, push, and set list back
+        ref_list list = layout.get_flag(polymorphic_container_flags::LIST_BIT) ? layout.get_list() : create_list();
         list.push_back(ref);
         layout.set_list(list);
     }
@@ -648,9 +652,8 @@ public:
     inline bool delete_ref(void* ptr) {
         ENTT_ASSERT(ptr != layout.value_base(), "delete_ref must not receive reference to its own value");
         if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
-            // if holds component list
-            ref_list list = layout.get_list();
-            bool success = delete_ref_internal(list, ptr);
+            // if holds component list, remove reference from it, and assert, that it was there
+            [[maybe_unused]] bool success = delete_ref_internal(layout.get_list(), ptr);
             ENTT_ASSERT(success, "delete_ref got non-existing reference");
             return false;
         } else {
@@ -678,7 +681,6 @@ public:
     // construct Component value inside the container, moves contained references to list (creates one, if required), emplace hierarchy references
     template<typename... Args>
     inline void construct_value(entt::basic_registry<Entity> &registry, const Entity entity, Args &&...args) {
-        // check, if we already contain a value
         ENTT_ASSERT(layout.get_flag(polymorphic_container_flags::REFERENCE_BIT), "construct_value called while already holding a value");
         // get or create the list
         ref_list list = (layout.get_flag(polymorphic_container_flags::LIST_BIT) ? layout.get_list() : create_list());
@@ -693,13 +695,13 @@ public:
         emplace_hierarchy_references(registry, entity, ref(), polymorphic_component_parents_t<Component>{});
     }
 
+    // used, when container is constructed with value
     inline void emplace_hierarchy_after_construct(entt::basic_registry<Entity> &registry, const Entity entity) {
         emplace_hierarchy_references(registry, entity, ref(), polymorphic_component_parents_t<Component>{});
     }
 
     // destroys contained Component value inside the container, return true, if it is now empty, false, if it still contains one or more references
     inline bool destroy_value(entt::basic_registry<Entity> &registry, const Entity entity) {
-        // check, if we have a value
         ENTT_ASSERT(!layout.get_flag(polymorphic_container_flags::REFERENCE_BIT), "destroy_value called while not holding a value");
         // erase hierarchy
         Component& r = ref();
@@ -713,15 +715,16 @@ public:
             ref_list list = layout.get_list();
             layout.set_flag(polymorphic_container_flags::REFERENCE_BIT);
             // delete reference to this from the list and put some reference from the list into container
-            delete_ref_internal(list, this);
-            // if we still have list, copy first reference from it for fast access
+            [[maybe_unused]] bool success = delete_ref_internal(list, layout.value_base());
+            ENTT_ASSERT(success, "self reference was not present inside the list");
+            // if we still have a list, copy first reference from it
             if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
                 layout.replace_ref_from_list(layout.get_list().get_list()->pointer);
             }
             // some references are still remaining in the container
             return false;
         } else {
-            // no list, no value, container is empty and can be destroyed
+            // no list, no value, container is empty and can be destroyed, set the reference flag, so destructor will not try to delete the value
             layout.set_flag(polymorphic_container_flags::REFERENCE_BIT);
             return true;
         }
@@ -755,7 +758,6 @@ public:
     // destructor does something, only if container still contains a value, this can happen, only when storage, holding this container, is destroyed, erase must not trigger this
     inline ~polymorphic_component_container() {
         if (!layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
-            // std::cout << "deleting value in component container destructor, must happen only during registry shutdown: " << typeid(Component).name() << "\n";
             typename alloc_traits::allocator_type allocator{};
             alloc_traits::destroy(allocator, layout.value_base());
         }
