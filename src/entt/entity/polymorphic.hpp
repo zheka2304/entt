@@ -309,107 +309,101 @@ template<typename Allocator>
 using page_source_from_allocator = component_ref_list_page_source<typename std::allocator_traits<Allocator>::template rebind_alloc<void*>>;
 
 // wraps a void* pointer to reference list memory with some helper methods, does not allocate or deallocate memory on construction/destruction/copy/etc.
+template<typename Component, typename PageSource>
 struct polymorphic_component_ref_list {
-
-    inline static polymorphic_component_ref_list null_list() {
-        static uintptr_t zero[2] = {0, 0};
-        return polymorphic_component_ref_list{&zero};
+    inline static void** null_list_base() ENTT_NOEXCEPT {
+        static void* zero[2] = {nullptr, nullptr};
+        return zero;
     }
 
-    explicit polymorphic_component_ref_list(void *b) :
-            base(reinterpret_cast<void **>(b)) {}
+    inline explicit polymorphic_component_ref_list(void* b) ENTT_NOEXCEPT :
+            base(reinterpret_cast<void**>(b)) {}
 
-    inline void **get_base() {
+    [[nodiscard]] inline void** get_base() ENTT_NOEXCEPT {
         return base;
     }
 
-    [[nodiscard]] inline std::size_t get_size() const {
+    [[nodiscard]] inline std::size_t get_size() const ENTT_NOEXCEPT  {
         return static_cast<std::size_t>(*reinterpret_cast<uintptr_t *>(base));
     }
 
-    inline void set_size(std::size_t count) {
+    inline void set_size(std::size_t count) ENTT_NOEXCEPT {
         *reinterpret_cast<uintptr_t *>(base) = static_cast<uintptr_t>(count);
     }
 
-    [[nodiscard]] inline std::size_t get_capacity() const {
+    [[nodiscard]] inline std::size_t get_capacity() const ENTT_NOEXCEPT {
         return static_cast<std::size_t>(*reinterpret_cast<uintptr_t *>(base + 1));
     }
 
-    inline void set_capacity(std::size_t capacity) {
-        *reinterpret_cast<uintptr_t *>(base + 1) = static_cast<uintptr_t>(capacity);
+    inline void set_capacity(std::size_t capacity) ENTT_NOEXCEPT {
+        *reinterpret_cast<uintptr_t*>(base + 1) = static_cast<uintptr_t>(capacity);
     }
 
-    inline polymorphic_component_ref *get_list() {
+    [[nodiscard]] inline polymorphic_component_ref* get_list() {
         return reinterpret_cast<polymorphic_component_ref *>(base + 2);
     }
 
-    inline const polymorphic_component_ref *get_list() const {
-        return reinterpret_cast<polymorphic_component_ref const *>(base + 2);
+    [[nodiscard]] inline const polymorphic_component_ref* get_list() const ENTT_NOEXCEPT {
+        return reinterpret_cast<polymorphic_component_ref const*>(base + 2);
     }
 
-    template<typename Allocator>
     inline void reserve(std::size_t size) {
         if (get_capacity() < size) {
             std::size_t old_size = get_size();
-            void **new_base = page_source_from_allocator<Allocator>::allocate_array(next_power_of_two(size));
+            void** new_base = PageSource::allocate_array(next_power_of_two(size));
             if (old_size > 0) {
                 memcpy(new_base + 2, get_list(), sizeof(polymorphic_component_ref) * old_size);
-                page_source_from_allocator<Allocator>::free_array(base);
+                PageSource::free_array(base);
             }
             base = new_base;
         }
     }
 
-    template<typename Allocator>
     inline void clear() {
-        page_source_from_allocator<Allocator>::free_array(base);
-        base = null_list().base;
+        PageSource::free_array(base);
+        base = null_list_base();
     }
 
-    template<typename Allocator>
     inline void push_back(polymorphic_component_ref ref) {
         std::size_t size = get_size();
-        reserve<Allocator>(size + 1);
+        reserve(size + 1);
         get_list()[size] = ref;
         set_size(size + 1);
     }
 
-    template<typename Allocator>
     inline void pop_back() {
         std::size_t new_size = get_size() - 1;
         set_size(new_size);
         if (new_size == 0) {
-            clear<Allocator>();
+            clear();
         }
     }
 
-    template<typename T>
-    inline every<T> each() {
+    inline every<Component> each() ENTT_NOEXCEPT {
         polymorphic_component_ref *list = get_list();
-        return {polymorphic_component_ref_iterator<T>{list, 0}, polymorphic_component_ref_iterator<T>{list, static_cast<int>(get_size())}};
+        return {polymorphic_component_ref_iterator<Component>{list, 0}, polymorphic_component_ref_iterator<Component>{list, static_cast<int>(get_size())}};
     }
 
-    template<typename T>
-    inline every<const T> each() const {
+    inline every<const Component> each() const ENTT_NOEXCEPT {
         const polymorphic_component_ref *list = get_list();
-        return {typename every<const T>::iterator{list, 0}, typename every<const T>::iterator{list, static_cast<int>(get_size())}};
+        return {typename every<const Component>::iterator{list, 0}, typename every<const Component>::iterator{list, static_cast<int>(get_size())}};
     }
 
 private:
-    void **base;
+    void** base;
 };
 
-// Container for polymorphic components, can hold a value + reference list, can hold 1 component or reference without heap allocation,
-// used as an internal type in polymorphic component storages. Has additional memory usage only of one pointer per component.
-//
-// Container can hold either:
-// - value of the component of the exact type Component + optional pointer to reference list
-// - reference to some component of any Component's child type + optional pointer to reference list
-//
-// One reference/value is always stored in the container itself (not the list), so it can be accessed really fast, in case only one component is requested.
-// List, if present, always contains duplicate reference to value, contained in this container (if there is any), so iteration does not require any additional checks.
-//
-// Note! Internal workings of the container rely on pointer alignment, assuming that all used pointers have at least 2 bits, that are always zero,
+// Flags, which describe internal state of polymorphic component
+namespace polymorphic_container_flags {
+    static constexpr std::uint8_t REFERENCE_BIT = 1;
+    static constexpr std::uint8_t LIST_BIT = 2;
+};
+
+// Encapsulates memory access and layout of a polymorphic component container, implementing all required higher level functionalities
+template<typename Component, typename Allocator, typename = void>
+struct polymorphic_container_memory_layout;
+
+// Note! Internal workings of this wrapper rely on pointer alignment, assuming that all used pointers have at least 2 bits, that are always zero,
 // so additional stored pointer also used for storing 2 bit flags for the state of the container:
 //    - bit 1 (pointer & 1) is 0 when container holds component value and 1 otherwise
 //    - bit 2 (pointer & 2) is 1 when container holds a pointer to heap-allocated list of references
@@ -423,36 +417,121 @@ private:
 //    data = [component value], pointer = [pointer to list, list holds at least 2 references: one to contained value and one to something else]
 // Reference + list (pointer bits 11):
 //    data = [pointer to list, contains at least 2 references, one is contained in this container, and one is somewhere else] pointer = [pointer to any component from reference list]
+template<typename Component, typename Allocator>
+struct polymorphic_container_memory_layout<Component, Allocator, void> {
+    static constexpr std::size_t buffer_alignment = std::max(alignof(Component), alignof(void*));
+    static constexpr std::size_t buffer_size = std::max(sizeof(Component), sizeof(void*));
+
+    using ref_list = polymorphic_component_ref_list<Component, page_source_from_allocator<Allocator>>;
+
+private:
+    // memory layout
+    struct alignas(buffer_alignment) {
+        uint8_t bytes[buffer_size];
+    } value;
+
+    std::uintptr_t pointer;
+
+public:
+    // flag access
+    inline std::uint8_t get_flag(std::uint8_t bit) ENTT_NOEXCEPT {
+        return pointer & bit;
+    }
+
+    inline void set_flag(std::uint8_t bit) ENTT_NOEXCEPT {
+        pointer |= bit;
+    }
+
+    inline void clear_flag(std::uint8_t bit) ENTT_NOEXCEPT {
+        pointer &= (static_cast<std::uintptr_t>(-1) ^ bit);
+    }
+
+    inline void flip_flag(std::uint8_t bit) ENTT_NOEXCEPT {
+        pointer ^= bit;
+    }
+
+    // return buffer for value
+    inline Component* value_base() ENTT_NOEXCEPT {
+        return reinterpret_cast<Component*>(&value);
+    }
+
+    // return single reference
+    inline Component& ref() ENTT_NOEXCEPT {
+        constexpr uintptr_t mask = static_cast<uintptr_t>(-1) ^ 3u;
+        void* pointers[2] = {value_base(), reinterpret_cast<void*>(pointer & mask)};
+        return *reinterpret_cast<Component*>(pointers[get_flag(polymorphic_container_flags::REFERENCE_BIT)]);
+    }
+
+    // get list (does not check, if list flag is set, getting list when it is not present is undefined behavior)
+    inline ref_list get_list() ENTT_NOEXCEPT {
+        constexpr std::uintptr_t mask = static_cast<std::uintptr_t>(-1) ^ 3u;
+        void* pointers[2] = {reinterpret_cast<void*>(pointer & mask), *reinterpret_cast<void**>(&value)};
+        return ref_list{pointers[get_flag(polymorphic_container_flags::REFERENCE_BIT)]};
+    }
+
+    // set list + list flag (if contains single reference + deleter, it will be kept without deleter)
+    inline void set_list(ref_list list) ENTT_NOEXCEPT {
+        void* pointers[2] = {&pointer, value_base()};
+        std::uint8_t reference_bit = get_flag(polymorphic_container_flags::REFERENCE_BIT);
+        *reinterpret_cast<std::uintptr_t*>(pointers[reference_bit]) = reinterpret_cast<uintptr_t>(list.get_base());
+        set_flag(polymorphic_container_flags::LIST_BIT);
+    }
+
+    // set single reference with no list or value + reference flag (other flags are removed)
+    inline void set_single_ref(polymorphic_component_ref ref) ENTT_NOEXCEPT {
+        pointer = reinterpret_cast<std::uintptr_t>(ref.pointer) | polymorphic_container_flags::REFERENCE_BIT;
+        *reinterpret_cast<void**>(value_base()) = ref.deleter;
+    }
+
+    // in a single reference state returns full reference
+    inline polymorphic_component_ref get_single_ref() ENTT_NOEXCEPT {
+        constexpr uintptr_t mask = static_cast<uintptr_t>(-1) ^ 3u;
+        return polymorphic_component_ref{reinterpret_cast<void*>(pointer & mask), *reinterpret_cast<void**>(value_base())};
+    }
+
+    // when holding a list + reference (both flags are set), replace contained reference with a given pointer
+    inline void replace_ref_from_list(void* ptr) ENTT_NOEXCEPT {
+        pointer = reinterpret_cast<std::uintptr_t>(ptr) | polymorphic_container_flags::LIST_BIT | polymorphic_container_flags::REFERENCE_BIT;
+    }
+
+    // setup state of containing only value and no ref list
+    inline void set_only_value() ENTT_NOEXCEPT {
+        pointer = reinterpret_cast<std::uintptr_t>(ref_list::null_list_base());
+    }
+};
+
+// Container for polymorphic components, can hold a value + reference list, can hold 1 component or reference without heap allocation,
+// used as an internal type in polymorphic component storages. Has additional memory usage only of one pointer per component.
+//
+// Container can hold either:
+// - value of the component of the exact type Component + optional pointer to reference list
+// - reference to some component of any Component's child type + optional pointer to reference list
+//
+// One reference/value is always stored in the container itself (not the list), so it can be accessed really fast, in case only one component is requested.
+// List, if present, always contains duplicate reference to value, contained in this container (if there is any), so iteration does not require any additional checks.
 template<typename Entity, typename Component, typename Allocator>
 struct polymorphic_component_container {
     using this_type = polymorphic_component_container<Entity, Component, Allocator>;
     using alloc_traits = typename std::allocator_traits<Allocator>;
+    using memory_layout = polymorphic_container_memory_layout<Component, Allocator>;
+    using ref_list = typename memory_layout::ref_list;
 
     static_assert(std::is_same_v<typename alloc_traits::value_type, Component>);
     static_assert(is_polymorphic_component_v<Component>);
 
     static constexpr bool in_place_delete = true;
 
-    // buffer to store component value in
-    struct alignas(alignof(void *)) {
-        uint8_t data[std::max(sizeof(Component), sizeof(void *))];
-    } data;
-
-    // additional pointer, also used to store flags
-    uintptr_t pointer;
-
     // initializes container with single reference
     inline explicit polymorphic_component_container(polymorphic_component_ref ref) {
-        pointer = reinterpret_cast<uintptr_t>(ref.pointer) | 1u;
-        *reinterpret_cast<void **>(this) = ref.deleter;
+        layout.set_single_ref(ref);
     }
 
     // initialize container with value
     template<typename... Args>
     inline explicit polymorphic_component_container(Args &&...args) {
         typename alloc_traits::allocator_type allocator{};
-        alloc_traits::construct(allocator, reinterpret_cast<Component *>(this), std::forward<Args>(args)...);
-        pointer = reinterpret_cast<uintptr_t>(polymorphic_component_ref_list::null_list().get_base());
+        alloc_traits::construct(allocator, layout.value_base(), std::forward<Args>(args)...);
+        layout.set_only_value();
     }
 
     // no move/copy/swap is allowed, all component pointers must be stable
@@ -465,87 +544,59 @@ struct polymorphic_component_container {
     }
 
     // returns reference to any contained component
-    inline Component &ref() {
-        constexpr uintptr_t mask = static_cast<uintptr_t>(-1) ^ 3u;
-        uintptr_t p = pointer & mask;
-        // do it without branches for maximum efficiency, just one pointer deref
-        uintptr_t pointers[2] = {reinterpret_cast<uintptr_t>(this), p};
-        return *reinterpret_cast<Component *>(pointers[pointer & uintptr_t(1u)]);
+    inline Component& ref() {
+        return layout.ref();
     }
 
-    inline const Component &ref() const {
+    inline const Component& ref() const {
         return const_cast<this_type *>(this)->ref();
     }
 
 private:
-    // gets current list
-    // must be called only if already holding a non-empty list (pointer & 2 is set to 1)
-    inline polymorphic_component_ref_list get_list() {
-        constexpr uintptr_t mask = static_cast<uintptr_t>(-1) ^ 3u;
-        uintptr_t choice[2] = {pointer & mask, *reinterpret_cast<uintptr_t *>(this)};
-        return polymorphic_component_ref_list{reinterpret_cast<void *>(choice[pointer & 1])};
-    }
-
-    // sets current list
-    // must be called only if already holding a non-empty list (pointer & 2 is set to 1) to change it to another non-empty list
-    inline void set_list(polymorphic_component_ref_list list) {
-        if (pointer & 1u) {
-            // if holding a reference (bits 11)
-            *reinterpret_cast<polymorphic_component_ref_list *>(this) = list;
-        } else {
-            // if holding a value (bits 10)
-            pointer = reinterpret_cast<uintptr_t>(list.get_base()) | 2u;
-        }
-    }
-
     // creates new list, puts it into container and returns
-    inline polymorphic_component_ref_list create_list() {
-        polymorphic_component_ref_list list = polymorphic_component_ref_list::null_list();
-        list.template reserve<Allocator>(4);
-        if (pointer & 1u) {
+    inline ref_list create_list() {
+        ref_list list{ref_list::null_list_base()};
+        list.reserve(4);
+        if (layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
             // if contains reference
-            list.template push_back<Allocator>({std::addressof(ref()), *reinterpret_cast<void **>(this)});
+            list.push_back(layout.get_single_ref());
         } else {
             // if contains a value
-            list.template push_back<Allocator>({this, reinterpret_cast<void *>(&deleter)});
+            list.push_back({layout.value_base(), reinterpret_cast<void *>(&deleter)});
         }
-        pointer |= 2u;
-        set_list(list);
+        layout.set_list(list);
         return list;
     }
 
     // removes current list and puts remaining reference into container
     // must be called only if already holding a non-empty list (pointer & 2 is set to 1) to remove it (will not delete list, it must be freed manually)
     inline void clear_list(polymorphic_component_ref self_ref) {
-        if (pointer & 1u) {
-            // if holding a reference (bits 11, must be set to 01)
-            *reinterpret_cast<void **>(this) = self_ref.deleter;              // put deleter
-            pointer = reinterpret_cast<uintptr_t>(self_ref.pointer) | 1u;     // put reference, bits 01
+        if (layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
+            layout.set_single_ref(self_ref);
         } else {
-            // if holding a value (bits 10, must be 00)
-            pointer = reinterpret_cast<uintptr_t>(polymorphic_component_ref_list::null_list().get_base()); // pointer = null_list, bits of it are already 00
+            layout.set_only_value();
         }
     }
 
     // receives self list, deletes reference, that matches given pointer from it, if only one reference left, clears the list and puts reference into container
-    inline bool delete_ref_internal(polymorphic_component_ref_list list, void *ptr) {
+    inline bool delete_ref_internal(ref_list list, void *ptr) {
         std::size_t size = list.get_size();
-        polymorphic_component_ref *mem = list.get_list();
+        polymorphic_component_ref* mem = list.get_list();
         // iterate over list and search matching ref
         for (std::size_t i = 0; i < size; i++) {
             if (mem[i].pointer == ptr) {
                 // swap and pop
                 std::swap(mem[i], mem[size - 1]);
-                list.template pop_back<Allocator>();
+                list.pop_back();
                 // if only one ref left
                 if (size == 2) {
                     // clear list and put one remaining reference into container
                     clear_list(mem[0]);
                     // pop last element to clear the list completely, this will free memory
-                    list.template pop_back<Allocator>();
+                    list.pop_back();
                 } else {
                     // update list pointer
-                    set_list(list);
+                    layout.set_list(list);
                 }
                 return true;
             }
@@ -555,158 +606,158 @@ private:
 
 public:
     // iterates over component references
-    every<Component> each() {
-        if (pointer & 2u) {
+    inline every<Component> each() ENTT_NOEXCEPT {
+        if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
             // if holds component list
-            return get_list().template each<Component>();
+            return layout.get_list().each();
         } else {
             // if holds only one component
             using iterator = typename every<Component>::iterator;
-            auto *list = reinterpret_cast<polymorphic_component_ref *>(std::addressof(ref()));
+            auto* list = reinterpret_cast<polymorphic_component_ref *>(std::addressof(ref()));
             return every<Component>{iterator{list, -1}, iterator{list, 0}};
         }
     }
 
     // iterates over component references
-    every<const Component> each() const {
-        if (pointer & 2u) {
+    inline every<const Component> each() const ENTT_NOEXCEPT {
+        if (layout.get_flag(polymorphic_container_flags::LIST_BIT) & 2u) {
             // if holds component list
-            return const_cast<this_type*>(this)->get_list().template each<const Component>();
+            return const_cast<this_type*>(this)->layout.get_list().each();
         } else {
             // if holds only one component
             using iterator = typename every<const Component>::iterator;
-            const auto *list = reinterpret_cast<const polymorphic_component_ref *>(std::addressof(ref()));
+            const auto* list = reinterpret_cast<const polymorphic_component_ref *>(std::addressof(ref()));
             return every<const Component>{iterator{list, -1}, iterator{list, 0}};
         }
     }
 
     // add reference to list
-    void add_ref(polymorphic_component_ref ref) {
-        ENTT_ASSERT(ref.pointer != this);
-        polymorphic_component_ref_list list{nullptr};
-        if (pointer & 2u) {
-            list = get_list();
+    inline void add_ref(polymorphic_component_ref ref) {
+        ENTT_ASSERT(ref.pointer != layout.value_base(), "add_ref must not receive reference to its own value");
+        ref_list list{nullptr};
+        if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
+            list = layout.get_list();
         } else {
             list = create_list();
         }
-        list.template push_back<Allocator>(ref);
-        set_list(list);
+        list.push_back(ref);
+        layout.set_list(list);
     }
 
     // deletes component reference from list, returns true, if the container is now empty and can be deleted
-    bool delete_ref(void *ptr) {
-        ENTT_ASSERT(ptr != this);
-        if (pointer & 2u) {
+    inline bool delete_ref(void* ptr) {
+        ENTT_ASSERT(ptr != layout.value_base(), "delete_ref must not receive reference to its own value");
+        if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
             // if holds component list
-            polymorphic_component_ref_list list = get_list();
+            ref_list list = layout.get_list();
             bool success = delete_ref_internal(list, ptr);
-            ENTT_ASSERT(success);
+            ENTT_ASSERT(success, "delete_ref got non-existing reference");
             return false;
         } else {
             // otherwise, ensure, that we are holding the deleted ref
-            ENTT_ASSERT(std::addressof(ref()) == ptr);
+            ENTT_ASSERT(std::addressof(ref()) == ptr, "delete_ref got non-existing reference (only one left)");
             // return true, if we were holding the last reference
-            return pointer & 1u;
+            return layout.get_flag(polymorphic_container_flags::REFERENCE_BIT);
         }
     }
 
 private:
     // emplace references to this into containers for all parent types
     template<typename... ParentComponent>
-    void emplace_hierarchy_references(entt::basic_registry<Entity> &registry, const Entity entity, Component &r, [[maybe_unused]] type_list<ParentComponent...> sequence) {
+    inline void emplace_hierarchy_references(entt::basic_registry<Entity> &registry, const Entity entity, Component &r, [[maybe_unused]] type_list<ParentComponent...> sequence) {
         (registry.template assure<ParentComponent>().emplace_ref(entity, r, reinterpret_cast<void *>(&deleter)), ...);
     }
 
     // erase references to this from containers for all parent types
     template<typename... ParentComponent>
-    void erase_hierarchy_references(entt::basic_registry<Entity> &registry, const Entity entity, Component &r, [[maybe_unused]] type_list<ParentComponent...> sequence) {
+    inline void erase_hierarchy_references(entt::basic_registry<Entity> &registry, const Entity entity, Component &r, [[maybe_unused]] type_list<ParentComponent...> sequence) {
         (registry.template assure<ParentComponent>().erase_ref(entity, r), ...);
     }
 
 public:
     // construct Component value inside the container, moves contained references to list (creates one, if required), emplace hierarchy references
     template<typename... Args>
-    void construct_value(entt::basic_registry<Entity> &registry, const Entity entity, Args &&...args) {
+    inline void construct_value(entt::basic_registry<Entity> &registry, const Entity entity, Args &&...args) {
         // check, if we already contain a value
-        ENTT_ASSERT(pointer & 1u);
+        ENTT_ASSERT(layout.get_flag(polymorphic_container_flags::REFERENCE_BIT), "construct_value called while already holding a value");
         // get or create the list
-        polymorphic_component_ref_list list = (pointer & 2u ? get_list() : create_list());
-        // construct the value and flip value bit
+        ref_list list = (layout.get_flag(polymorphic_container_flags::LIST_BIT) ? layout.get_list() : create_list());
+        // construct the value and clear reference flag
         typename alloc_traits::allocator_type allocator{};
-        alloc_traits::construct(allocator, reinterpret_cast<Component *>(this), std::forward<Args>(args)...);
-        pointer ^= 1u;
+        alloc_traits::construct(allocator, layout.value_base(), std::forward<Args>(args)...);
+        layout.clear_flag(polymorphic_container_flags::REFERENCE_BIT);
         // add self reference to list and set it back
-        list.template push_back<Allocator>({this, reinterpret_cast<void *>(&deleter)});
-        set_list(list);
+        list.push_back({layout.value_base(), reinterpret_cast<void *>(&deleter)});
+        layout.set_list(list);
         // emplace hierarchy
         emplace_hierarchy_references(registry, entity, ref(), polymorphic_component_parents_t<Component>{});
     }
 
-    void emplace_hierarchy_after_construct(entt::basic_registry<Entity> &registry, const Entity entity) {
+    inline void emplace_hierarchy_after_construct(entt::basic_registry<Entity> &registry, const Entity entity) {
         emplace_hierarchy_references(registry, entity, ref(), polymorphic_component_parents_t<Component>{});
     }
 
     // destroys contained Component value inside the container, return true, if it is now empty, false, if it still contains one or more references
-    bool destroy_value(entt::basic_registry<Entity> &registry, const Entity entity) {
+    inline bool destroy_value(entt::basic_registry<Entity> &registry, const Entity entity) {
         // check, if we have a value
-        ENTT_ASSERT(!(pointer & 1u));
+        ENTT_ASSERT(!layout.get_flag(polymorphic_container_flags::REFERENCE_BIT), "destroy_value called while not holding a value");
         // erase hierarchy
-        Component &r = ref();
+        Component& r = ref();
         erase_hierarchy_references(registry, entity, r, polymorphic_component_parents_t<Component>{});
         // destroy value
         typename alloc_traits::allocator_type allocator{};
         alloc_traits::destroy(allocator, reinterpret_cast<Component *>(this));
         // if we have the list, then it contains at least 2 references
-        if (pointer & 2u) {
+        if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
             // get the list and flip the pointer
-            polymorphic_component_ref_list list = get_list();
-            pointer ^= 1u;
+            ref_list list = layout.get_list();
+            layout.set_flag(polymorphic_container_flags::REFERENCE_BIT);
             // delete reference to this from the list and put some reference from the list into container
             delete_ref_internal(list, this);
-            // if we still have list (we are in a state 11), copy first reference from it
-            if (pointer & 2u) {
-                pointer = reinterpret_cast<uintptr_t>(get_list().get_list()->pointer);
+            // if we still have list, copy first reference from it for fast access
+            if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
+                layout.replace_ref_from_list(layout.get_list().get_list()->pointer);
             }
             // some references are still remaining in the container
             return false;
         } else {
             // no list, no value, container is empty and can be destroyed
-            pointer ^= 1u;
+            layout.set_flag(polymorphic_container_flags::REFERENCE_BIT);
             return true;
         }
     }
 
     // destroys all references, returns true, if it is now empty and can be destroyed, false, if it still contains a value
-    bool destroy_all_refs(entt::basic_registry<Entity> &registry, const Entity entity) {
-        if (pointer & 2u) {
+    inline bool destroy_all_refs(entt::basic_registry<Entity> &registry, const Entity entity) {
+        if (layout.get_flag(polymorphic_container_flags::LIST_BIT)) {
             // if we have list
-            polymorphic_component_ref_list list = get_list();
-            polymorphic_component_ref *mem = list.get_list();
+            ref_list list = layout.get_list();
+            polymorphic_component_ref* mem = list.get_list();
             std::size_t count = list.get_size();
             // iterating list backwards guards us from swap-and-pop delete of the current element
             for (int i = static_cast<int>(count) - 1; i >= 0; i--) {
                 if (mem[i].pointer != this) {
-                    reinterpret_cast<void (*)(entt::basic_registry<Entity> &registry,
-                                              const Entity entity)>(mem[i].deleter)(registry, entity);
+                    reinterpret_cast<void (*)(entt::basic_registry<Entity>& registry, const Entity entity)>(mem[i].deleter)(registry, entity);
                 }
             }
-            ENTT_ASSERT(get_list().get_capacity() == 0);
-            set_list(polymorphic_component_ref_list::null_list());
-            pointer ^= 2u;
-        } else if (pointer & 1u) {
+            ENTT_ASSERT(layout.get_list().get_capacity() == 0, "list is not fully cleaned after destroying all refs");
+            // clear list
+            layout.set_list(ref_list{ref_list::null_list_base()});
+            layout.clear_flag(polymorphic_container_flags::LIST_BIT);
+        } else if (layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
             // if we just have one ref
-            (*reinterpret_cast<void (**)(entt::basic_registry<Entity> &registry, const Entity entity)>(this))(registry, entity);
+            (reinterpret_cast<void (*)(entt::basic_registry<Entity>& registry, const Entity entity)>(layout.get_single_ref().deleter))(registry, entity);
         }
         // return true, if we did not contain a value
-        return pointer & 1u;
+        return layout.get_flag(polymorphic_container_flags::REFERENCE_BIT);
     }
 
     // destructor does something, only if container still contains a value, this can happen, only when storage, holding this container, is destroyed, erase must not trigger this
-    ~polymorphic_component_container() {
-        if (!(pointer & 1u)) {
+    inline ~polymorphic_component_container() {
+        if (!layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
             // std::cout << "deleting value in component container destructor, must happen only during registry shutdown: " << typeid(Component).name() << "\n";
             typename alloc_traits::allocator_type allocator{};
-            alloc_traits::destroy(allocator, reinterpret_cast<Component *>(this));
+            alloc_traits::destroy(allocator, layout.value_base());
         }
     }
 
@@ -714,7 +765,11 @@ public:
     static void deleter(entt::basic_registry<Entity> &registry, const Entity entity) {
         registry.template assure<Component>().erase_value(registry, entity);
     }
+
+private:
+    memory_layout layout;
 };
+
 
 // checks, if given type is polymorphic component container, and extracts component type
 template<typename T, typename = void, typename = void>
