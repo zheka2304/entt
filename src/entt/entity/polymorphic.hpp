@@ -547,22 +547,22 @@ struct polymorphic_component_container {
     polymorphic_component_container(polymorphic_component_container&& other) = delete;
     void operator=(const polymorphic_component_container&) = delete;
     void operator=(polymorphic_component_container&& other) = delete;
-    inline void swap(polymorphic_component_container& other) {
+    inline void swap(polymorphic_component_container& other) ENTT_NOEXCEPT {
         ENTT_ASSERT(false, "this should never be called, polymorphic container is not swappable");
     }
 
     // returns reference to any contained component
-    inline Component& ref() {
+    inline Component& ref() ENTT_NOEXCEPT {
         return layout.ref();
     }
 
-    inline const Component& ref() const {
+    inline const Component& ref() const ENTT_NOEXCEPT {
         return const_cast<this_type *>(this)->ref();
     }
 
 private:
     // creates new list, puts it into container and returns
-    inline ref_list create_list() {
+    inline ref_list create_list() ENTT_NOEXCEPT {
         ref_list list{ref_list::null_list_base()};
         list.reserve(4);
         if (layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
@@ -578,7 +578,7 @@ private:
 
     // removes current list and puts remaining reference into container
     // must be called only if already holding a non-empty list (pointer & 2 is set to 1) to remove it (will not delete list, it must be freed manually)
-    inline void clear_list(polymorphic_component_ref self_ref) {
+    inline void clear_list(polymorphic_component_ref self_ref) ENTT_NOEXCEPT {
         if (layout.get_flag(polymorphic_container_flags::REFERENCE_BIT)) {
             layout.set_single_ref(self_ref);
         } else {
